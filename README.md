@@ -1,6 +1,8 @@
 # Roa.ai-V2-
 yes, the second version it was a mobile app last time now its a .exe file for my monster laptop
 
+   <img width="2535" height="1527" alt="image" src="https://github.com/user-attachments/assets/7550fd8f-17c2-4c8a-8eef-e7c54113b9b2" />
+
 
 ### Now how does this work?
 
