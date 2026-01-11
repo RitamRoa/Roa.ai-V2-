@@ -1,8 +1,6 @@
 ﻿import os
 import sys
 import gc
-import requests
-from bs4 import BeautifulSoup
 from ddgs import DDGS
 from llama_cpp import Llama
 
@@ -26,42 +24,87 @@ class AIBackend:
         if getattr(sys, 'frozen', False):
             base_path = os.path.dirname(sys.executable)
         else:
+            # Look for models in the project root
             base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
         models = {
-            "Dark Champion": os.path.join(base_path, "models", "L3.2-8X3B-MOE-Dark-Champion-Inst-18.4B-uncen-ablit_D_AU-Q4_k_m.gguf"),
-            "Coder Mode": os.path.join(base_path, "models", "qwen2.5-coder-7b-instruct-q5_k_m.gguf")
+            "Dark Champion": "L3.2-8X3B-MOE-Dark-Champion-Inst-18.4B-uncen-ablit_D_AU-Q4_k_m.gguf",
+            "Coder Mode": "qwen2.5-coder-7b-instruct-q6_k.gguf"
         }
 
-        path = models.get(model_choice)
-        if not path or not os.path.exists(path):
-            return f"Error: Model file not found at {path}"
+        filename = models.get(model_choice)
+        if not filename:
+            return f"Error: Unknown model choice: {model_choice}"
+
+        # Try multiple potential paths
+        search_paths = [
+            os.path.join(base_path, "models", filename),
+            os.path.join(os.getcwd(), "models", filename),
+            os.path.join(base_path, filename),
+            os.path.join(os.getcwd(), filename)
+        ]
+
+        # User specific local paths
+        if model_choice == "Dark Champion":
+            search_paths.append(r"C:\Users\Ritham\.lmstudio\models\DavidAU\Llama-3.2-8X3B-MOE-Dark-Champion-Instruct-uncensored-abliterated-18.4B-GGUF\L3.2-8X3B-MOE-Dark-Champion-Inst-18.4B-uncen-ablit_D_AU-Q4_k_m.gguf")
+        elif model_choice == "Coder Mode":
+            search_paths.append(r"C:\Users\Ritham\.lmstudio\models\Qwen\Qwen2.5-Coder-7B-Instruct-GGUF\qwen2.5-coder-7b-instruct-q6_k.gguf")
+
+        path = None
+        for p in search_paths:
+            if os.path.exists(p):
+                path = p
+                break
+
+        if not path:
+            tried_paths = "\n".join(search_paths)
+            return f"Error: Model file not found for {model_choice}. Tried:\n{tried_paths}"
+
+        print(f"[BACKEND] Loading model from: {path}")
 
         # GPU Tuning (RTX 5060 optimization)
         # Dark Champion is ~18.4B MoE, Q4_K_M is roughly 11GB. 
         # Coder is 7B, Q5_K_M is roughly 5.5GB.
         if model_choice == "Dark Champion":
-            gpu_layers = 8 # Lowered even more to ensure stability on 8GB VRAM
-            ctx_size = 4096
+            gpu_layers = 15 # Reduced from 20 to prevent VRAM OOM on 8GB cards
+            ctx_size = 2048 # Reduced from 4096 for MoE stability
         elif model_choice == "Coder Mode":
             gpu_layers = -1 # Fits easily in 8GB
-            ctx_size = 8192
+            ctx_size = 4096 # Reduced from 8192 for stability
         else:
             gpu_layers = -1
             ctx_size = 4096
 
         try:
+            # Thread optimization to prevent system-wide lag
+            import multiprocessing
+            cpu_count = multiprocessing.cpu_count()
+            # Use most cores but leave some for the OS/UI to prevent freezing
+            threads = max(1, cpu_count // 2) 
+
             self.llm = Llama(
                 model_path=path,
                 n_gpu_layers=gpu_layers,
                 n_ctx=ctx_size,
-                n_batch=512, # Explicitly set batch size
-                verbose=True # Turn on for better debugging in console
+                n_batch=512,
+                n_threads=threads,
+                verbose=True
             )
             self.current_model_name = model_choice
             return f"Success: {model_choice} loaded."
         except Exception as e:
             return f"Critical Load Error: {str(e)}"
+
+    def unload_model(self):
+        """Cleanly unloads the model and frees memory."""
+        if self.llm:
+            print(f"[BACKEND] Unloading {self.current_model_name}...")
+            # Explicitly call __del__ or just null it
+            del self.llm
+            self.llm = None
+            gc.collect()
+            return True
+        return False
 
     def web_search_and_scrape(self, query):
         """Performs a web search and returns a condensed context."""

@@ -177,6 +177,21 @@ class RoaApp(ctk.CTk):
         # Initial memory scan
         self.after(1000, self.refresh_memory_list)
 
+        # Clean exit handler
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def on_closing(self):
+        """Handle resource cleanup on window close."""
+        self.is_generating = False
+        self.status_lbl.configure(text="Status: SHUTTING DOWN...", text_color="orange")
+        # Run cleanup in a way that doesn't block the UI too much but ensures it happens
+        try:
+            self.backend.unload_model()
+        except:
+            pass
+        self.destroy()
+        sys.exit(0)
+
     def on_tab_change(self):
         # Navigation no longer triggers automatic model loading
         pass
@@ -456,11 +471,20 @@ class RoaApp(ctk.CTk):
 
     def load_model_task(self, model_name):
         res = self.backend.load_model(model_name)
-        self.after(0, lambda: self.status_lbl.configure(text=f"Status: ONLINE", text_color="#00FF00"))
+        if "Success" in res:
+            self.after(0, lambda: self.status_lbl.configure(text=f"Status: ONLINE", text_color="#00FF00"))
+        else:
+            self.after(0, lambda: self.status_lbl.configure(text=f"Status: ERROR", text_color="#EF4444"))
+            self.after(0, lambda: messagebox.showerror("Model Load Error", res))
 
     def send_generic_msg(self, input_widget, display_widget, role):
         if self.is_generating: return
         
+        # Check if model is loaded
+        if "ONLINE" not in self.status_lbl.cget("text"):
+            messagebox.showwarning("Model Not Ready", "Please load a model first and wait until status is ONLINE.")
+            return
+
         # Determine if input_widget is CTkTextbox or CTkEntry
         if isinstance(input_widget, ctk.CTkTextbox):
             text = input_widget.get("1.0", "end-1c")
@@ -543,6 +567,9 @@ class RoaApp(ctk.CTk):
         web_access = self.web_access_var.get()
         threading.Thread(target=self.generate_task, args=(prompt, sys_prompt, web_access, "CONTEXT"), daemon=True).start()
 
+    def get_timestamp(self, format="%H:%M %p"):
+        return datetime.datetime.now().strftime(format)
+
     def prepare_generation(self, text, role):
         self.is_generating = True
         self.stop_btn.configure(state="normal")
@@ -553,7 +580,7 @@ class RoaApp(ctk.CTk):
         self.current_textarea.is_code = False
         self.current_textarea.markdown_buffer = ""
 
-        timestamp = datetime.datetime.now().strftime("%H:%M %p")
+        timestamp = self.get_timestamp()
         model_display = self.backend.current_model_name or "Unknown Model"
         
         self.current_textarea.insert("end", f"\u25cf You\n", "role_user")
@@ -660,6 +687,33 @@ class RoaApp(ctk.CTk):
                     # ENDING code block
                     self.current_textarea.is_code = False
                     self.current_textarea.markdown_buffer = self.current_textarea.markdown_buffer[pos_code + 3:]
+            else:
+                # Safety break to prevent infinite loop if somehow indices are mismanaged
+                break
+                self.current_textarea.insert("end", text_before, get_tag())
+                if self.current_textarea.is_code:
+                    self.current_textarea.code_blocks[self.current_textarea.current_code_idx] += text_before
+                
+                # Marker found. Now consume it.
+                # Check if we are STARTING or ENDING
+                if not self.current_textarea.is_code:
+                    # Look for end of the language line
+                    remaining = self.current_textarea.markdown_buffer[pos_code + 3:]
+                    if "\n" in remaining:
+                        newline_pos = remaining.find("\n")
+                        lang = remaining[:newline_pos].strip() or "Code"
+                        self.create_code_header(self.current_textarea, lang)
+                        self.current_textarea.is_code = True
+                        self.current_textarea.markdown_buffer = remaining[newline_pos + 1:]
+                    else:
+                        # We found ``` but no newline yet. 
+                        # To prevent premature flushing, we must KEEP the marker in the buffer.
+                        # We stop processing this buffer and wait for more tokens.
+                        break
+                else:
+                    # ENDING code block
+                    self.current_textarea.is_code = False
+                    self.current_textarea.markdown_buffer = self.current_textarea.markdown_buffer[pos_code + 3:]
 
         # Flush SAFE content (anything before the start of a potential marker)
         buf = self.current_textarea.markdown_buffer
@@ -711,7 +765,7 @@ class RoaApp(ctk.CTk):
             
         # Ending timestamp and footer
         self.current_textarea.insert("end", "\n\u25b6\n", "system")
-        timestamp = datetime.datetime.now().strftime("%H:%M %p")
+        timestamp = self.get_timestamp()
         self.current_textarea.insert("end", f"{timestamp}\n\n", "system")
         
         self.current_textarea.see("end")
@@ -765,7 +819,7 @@ class RoaApp(ctk.CTk):
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)
             
-        date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        date_str = self.get_timestamp("%Y-%m-%d")
         filename = f"{role.capitalize()}_{date_str}.txt"
         filepath = os.path.join(log_dir, filename)
         
